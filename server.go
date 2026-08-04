@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -23,7 +22,7 @@ func newServer(store store.Store, port int, cancel context.CancelFunc) *server {
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
+		Handler: requestLogger(logger)(mux),
 	}
 
 	s := &server{
@@ -47,18 +46,19 @@ func (s *server) start() error {
 	ln, err := net.Listen("tcp", s.httpServer.Addr)
 	addr := ln.Addr().(*net.TCPAddr)
 	port := addr.Port
+	logger.Printf("Linko is running on http://localhost:%d", port)
 	if err != nil {
 		return err
 	}
 	if err := s.httpServer.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	log.Printf("Linko is running on http://localhost:%d", port)
+
 	return nil
 }
 
 func (s *server) shutdown(ctx context.Context) error {
-	log.Println("Linko is shutting down")
+	logger.Printf("Linko is shutting down")
 	return s.httpServer.Shutdown(ctx)
 }
 
