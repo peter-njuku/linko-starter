@@ -21,6 +21,11 @@ type stackTracer interface {
 	StackTrace() pkgerr.StackTrace
 }
 
+type multiError interface {
+	error
+	Unwrap() []error
+}
+
 type closeFunc func() error
 
 func main() {
@@ -138,6 +143,26 @@ func replaceAttr(groups []string, a slog.Attr) slog.Attr {
 		if !ok {
 			return a
 		}
+
+		if multiErr, ok := err.(multiError); ok {
+			unwrapped := multiErr.Unwrap()
+			if len(unwrapped) > 1 {
+				var errAttrs []slog.Attr
+				for i, subErr := range unwrapped {
+					subAttrs := []slog.Attr{
+						slog.String("message", subErr.Error()),
+					}
+					subAttrs = append(subAttrs, linkoerr.Attrs(subErr)...)
+					if stackErr, ok := subErr.(stackTracer); ok {
+						subAttrs = append(subAttrs, slog.String("stack_trace", fmt.Sprintf("%+v", stackErr.StackTrace())))
+					}
+					errAttrs = append(errAttrs, slog.GroupAttrs(fmt.Sprintf("error_%d", i+1), subAttrs...))
+				}
+				return slog.GroupAttrs("errors", errAttrs...)
+			}
+			err = unwrapped[0]
+		}
+
 		attrs := []slog.Attr{
 			slog.String("message", err.Error()),
 		}
