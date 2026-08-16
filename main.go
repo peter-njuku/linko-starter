@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -11,7 +12,13 @@ import (
 	"time"
 
 	"boot.dev/linko/internal/store"
+	pkgerr "github.com/pkg/errors"
 )
+
+type stackTracer interface {
+	error
+	StackTrace() pkgerr.StackTrace
+}
 
 type closeFunc func() error
 
@@ -74,7 +81,8 @@ func initializeLogger() (*slog.Logger, closeFunc, error) {
 	var handlers []slog.Handler
 
 	stderrHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
+		Level:       slog.LevelDebug,
+		ReplaceAttr: replaceAttr,
 	})
 	//	writers = append(writers, os.Stderr)
 	closers = append(closers, func() error { return nil })
@@ -88,7 +96,10 @@ func initializeLogger() (*slog.Logger, closeFunc, error) {
 		//bufferedWriters := bufio.NewWriterSize(file, 8192)
 		//		writers = append(writers, bufferedWriters)
 
-		fileHandler = slog.NewJSONHandler(file, &slog.HandlerOptions{Level: slog.LevelInfo})
+		fileHandler = slog.NewJSONHandler(file, &slog.HandlerOptions{
+			Level:       slog.LevelInfo,
+			ReplaceAttr: replaceAttr,
+		})
 
 		closers = append(closers, func() error {
 			//if err := bufferedWriters.Flush(); err != nil {
@@ -118,4 +129,26 @@ func initializeLogger() (*slog.Logger, closeFunc, error) {
 		}
 		return lastErr
 	}, nil
+}
+
+func replaceAttr(groups []string, a slog.Attr) slog.Attr {
+	if a.Key == "error" {
+		err, ok := a.Value.Any().(error)
+		if !ok {
+			return a
+		}
+		if stackErr, ok := errors.AsType[stackTracer](err); ok {
+			return slog.GroupAttrs(
+				"error", slog.Attr{
+					Key:   "message",
+					Value: slog.StringValue(stackErr.Error()),
+				}, slog.Attr{
+					Key:   "stack_trace",
+					Value: slog.StringValue(fmt.Sprintf("%+v", stackErr.StackTrace())),
+				},
+			)
+		}
+		return slog.String("error", fmt.Sprintf("%+v", err))
+	}
+	return a
 }
