@@ -80,7 +80,7 @@ func (s *server) handlerRedirect(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.logger.Error(
 				"Failed to lookup",
-				slog.String("error", err.Error()),
+				"error", err,
 			)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
