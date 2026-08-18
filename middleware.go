@@ -1,12 +1,19 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
 )
+
+const LogContextKey contextKey = "log_context"
+
+type LogContext struct {
+	Username string
+}
 
 type spyReadCloser struct {
 	io.ReadCloser
@@ -25,7 +32,6 @@ func (r *spyReadCloser) Read(p []byte) (int, error) {
 	}
 	n, err := r.ReadCloser.Read(p)
 	r.bytesRead += n
-	slog.Info("Body Read", "bytes", n, "err", err)
 	return n, err
 }
 
@@ -55,12 +61,22 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				statusCode:     http.StatusOK,
 			}
 
+			logctx := &LogContext{}
+
+			ctx := context.WithValue(r.Context(), LogContextKey, logctx)
+			r = r.WithContext(ctx)
+
 			r.Body = spyReader
 			next.ServeHTTP(spyWriter, r)
 
 			clientIP := r.RemoteAddr
 			if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 				clientIP = host
+			}
+
+			var userAttrs slog.Attr
+			if logctx.Username != "" {
+				userAttrs = slog.String("user", logctx.Username)
 			}
 
 			logger.Info(
@@ -72,6 +88,7 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("request_body_bytes", spyReader.bytesRead),
 				slog.Int("response_status", spyWriter.statusCode),
 				slog.Int("response_body_bytes", spyWriter.bytesWritten),
+				userAttrs,
 			)
 		})
 	}
