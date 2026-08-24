@@ -13,6 +13,7 @@ const LogContextKey contextKey = "log_context"
 
 type LogContext struct {
 	Username string
+	Error    error
 }
 
 type spyReadCloser struct {
@@ -50,6 +51,13 @@ func (w *spyResponseWriter) WriteHeader(statusCode int) {
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
+func httpError(ctx context.Context, w http.ResponseWriter, err error, status int) {
+	if logCtx, ok := ctx.Value(LogContextKey).(*LogContext); ok {
+		logCtx.Error = err
+	}
+	http.Error(w, err.Error(), status)
+}
+
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,8 +83,12 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 
 			var userAttrs slog.Attr
+			var errAttrs slog.Attr
 			if logctx.Username != "" {
 				userAttrs = slog.String("user", logctx.Username)
+			}
+			if logctx.Error != nil {
+				errAttrs = slog.String("error", logctx.Error.Error())
 			}
 
 			logger.Info(
@@ -89,6 +101,7 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("response_status", spyWriter.statusCode),
 				slog.Int("response_body_bytes", spyWriter.bytesWritten),
 				userAttrs,
+				errAttrs,
 			)
 		})
 	}
