@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net"
@@ -9,11 +11,15 @@ import (
 	"time"
 )
 
-const LogContextKey contextKey = "log_context"
+const (
+	LogContextKey contextKey = "log_context"
+	RequestIDKey  contextKey = "request_id"
+)
 
 type LogContext struct {
-	Username string
-	Error    error
+	Username  string
+	RequestID string
+	Error     error
 }
 
 type spyReadCloser struct {
@@ -58,21 +64,48 @@ func httpError(ctx context.Context, w http.ResponseWriter, err error, status int
 	http.Error(w, err.Error(), status)
 }
 
+func generateRequestID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return hex.EncodeToString([]byte(time.Now().Format("20060102150405.00000000")))
+	}
+	return hex.EncodeToString(buf)
+}
+
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := r.Header.Get("X-Request-ID")
+		if requestID == "" {
+			requestID = generateRequestID()
+		}
+
+		w.Header().Set("X-Request-ID", requestID)
+
+		if logCtx, ok := r.Context().Value(LogContextKey).(*LogContext); ok {
+			logCtx.RequestID = requestID
+		}
+
+		ctx := context.WithValue(r.Context(), RequestIDKey, requestID)
+		r = r.WithContext(ctx)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
+
+			logctx := &LogContext{}
+
+			ctx := context.WithValue(r.Context(), LogContextKey, logctx)
+			r = r.WithContext(ctx)
 
 			spyReader := &spyReadCloser{ReadCloser: r.Body}
 			spyWriter := &spyResponseWriter{
 				ResponseWriter: w,
 				statusCode:     http.StatusOK,
 			}
-
-			logctx := &LogContext{}
-
-			ctx := context.WithValue(r.Context(), LogContextKey, logctx)
-			r = r.WithContext(ctx)
 
 			r.Body = spyReader
 			next.ServeHTTP(spyWriter, r)
@@ -82,17 +115,7 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				clientIP = host
 			}
 
-			var userAttrs slog.Attr
-			var errAttrs slog.Attr
-			if logctx.Username != "" {
-				userAttrs = slog.String("user", logctx.Username)
-			}
-			if logctx.Error != nil {
-				errAttrs = slog.String("error", logctx.Error.Error())
-			}
-
-			logger.Info(
-				"Served request",
+			args := []any{
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.String("client_ip", clientIP),
@@ -100,9 +123,18 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("request_body_bytes", spyReader.bytesRead),
 				slog.Int("response_status", spyWriter.statusCode),
 				slog.Int("response_body_bytes", spyWriter.bytesWritten),
-				userAttrs,
-				errAttrs,
-			)
+			}
+			if logctx.Username != "" {
+				args = append(args, slog.String("user", logctx.Username))
+			}
+			if logctx.Error != nil {
+				args = append(args, slog.String("error", logctx.Error.Error()))
+			}
+			if logctx.RequestID != "" {
+				args = append(args, slog.String("request_id", logctx.RequestID))
+			}
+
+			logger.Info("Served request", args...)
 		})
 	}
 }
